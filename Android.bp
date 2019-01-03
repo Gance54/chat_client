@@ -1,0 +1,12 @@
+cc_defaults {
+    name: "client_common_defaults",
+    cflags: [
+    ],
+}
+
+cc_binary {
+    name: "chat_client",
+    defaults: ["curl_common_defaults"],
+    srcs: [ "main.c" ],
+    cflags: ["-Wno-missing-prototypes"],
+}
