@@ -25,22 +25,65 @@ static struct socket_fd {
     struct socket_fd *next;
 } gfd = { -1, 0, NULL };
 
-static void *receiving_thread (void *vargp) {
-    char buf[BUF_LEN_DEFAULT] = { 0, };
-    int socket_fd = *(int *)vargp;
-
-    while(1)
-        if(read(socket_fd, buf, sizeof(buf)) > 0)
-            fprintf(stdout, ">>%s\n", buf);
-
-    return NULL;
-}
-
 void get_client_ip(int fd, char *buf, size_t len) {
     struct sockaddr_in addr;
     socklen_t addr_size = sizeof(struct sockaddr_in);
     getpeername(fd, (struct sockaddr *)&addr, &addr_size);
     inet_ntop(AF_INET, &addr.sin_addr, buf, (unsigned int)len);
+}
+
+static void release_sfd(struct socket_fd *sfd) {
+    close(sfd->fd);
+    memset(sfd, 0xff, sizeof(struct socket_fd));
+    free(sfd);
+}
+
+static void free_global_resources(void) {
+    pthread_mutex_lock(&g_sock_mutex);
+    while(gfd.next) {
+        struct socket_fd *sfd = gfd.next;
+        gfd.next = sfd->next;
+        release_sfd(sfd);
+    }
+        pthread_mutex_unlock(&g_sock_mutex);
+}
+
+static int remove_global_fd(int fd) {
+    struct socket_fd *sfd = &gfd;
+    struct socket_fd *prev_sfd = sfd;
+
+    while(sfd->next) {
+        sfd = sfd->next;
+        if (sfd->fd == fd)
+        {
+            pthread_mutex_lock(&g_sock_mutex);
+            prev_sfd->next = sfd->next;
+            release_sfd(sfd);
+            pthread_mutex_unlock(&g_sock_mutex);
+            return 0;
+        }
+
+        prev_sfd = sfd;
+   }
+
+   return -1;
+}
+
+static void *receiving_thread (void *vargp) {
+    char buf[BUF_LEN_DEFAULT] = { 0, };
+    int socket_fd = *(int *)vargp;
+
+    while (1) {
+        if (read(socket_fd, buf, sizeof(buf)) > 0)
+            fprintf(stdout, ">>%s\n", buf);
+        else {
+            LOGI("Closing cosket %d", socket_fd);
+            remove_global_fd(socket_fd);
+            break;
+        }
+    }
+
+    return NULL;
 }
 
 static int add_global_fd(int fd) {
@@ -74,27 +117,6 @@ static int add_global_fd(int fd) {
          new_sfd->fd, ip_buf);
 
     return 0;
-}
-
-static int remove_global_fd(int fd) {
-    struct socket_fd *sfd = &gfd;
-    struct socket_fd *prev_sfd = sfd;
-
-    while(sfd->next) {
-        sfd = sfd->next;
-        if (sfd->fd == fd)
-        {
-            pthread_mutex_lock(&g_sock_mutex);
-            prev_sfd->next = sfd->next;
-            free(sfd);
-            pthread_mutex_unlock(&g_sock_mutex);
-            return 0;
-        }
-
-        prev_sfd = sfd;
-   }
-
-   return -1;
 }
 
 static int tcp_connect(int fd, struct sockaddr* addr) {
@@ -210,8 +232,8 @@ static void *main_listener_thread (void *vargp) {
     while (1) {
         int session_fd = accept(listening_fd, NULL, NULL);
         if (session_fd <= 0) {
-            LOGE("Failed to accept. continue working...");
-            continue;
+            LOGE("Failed to accept. something went wrong...");
+            return NULL;
         }
 
         if (handle_input_connection(session_fd))
@@ -314,14 +336,15 @@ out:
 }
 
 int main(void) {
-
     pthread_t m_listen_thread_id;
     int listener_fd = listener_start(TCP_PORT_DEFAULT);
     pthread_create(&m_listen_thread_id, NULL,
                    main_listener_thread, &listener_fd);
 
     main_loop();
-    pthread_join(m_listen_thread_id, NULL);
+    free_global_resources();
+    close(listener_fd);
+    pthread_cancel(m_listen_thread_id);
 
     return 0;
 }
