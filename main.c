@@ -29,7 +29,7 @@ static void *receiving_thread (void *vargp) {
 
     while(1)
         if(read(socket_fd, buf, sizeof(buf)) > 0)
-            fprintf(stdout, "Received message: %s\n", buf);
+            fprintf(stdout, ">>%s\n", buf);
 
     return NULL;
 }
@@ -89,16 +89,6 @@ static int remove_global_fd(int fd) {
    }
 
    return -1;
-}
-
-static void print_usage(void) {
-    fprintf(stdout, "Chat commands:\n");
-    fprintf(stdout, "    1 <x.x.x.x> - connect to another client "
-                    "with ip x.x.x.x\n");
-    fprintf(stdout, "    2 <message text> - write a broadcasting "
-                    "message\n");
-    fprintf(stdout, "    3 - see connections list\n");
-    fprintf(stdout, "    0 - exit input mode\n");
 }
 
 static int tcp_connect(int fd, struct sockaddr* addr) {
@@ -235,10 +225,18 @@ static void write_broadcasting_message(char *buf, size_t len) {
     }
 }
 
-static void handle_broadcasting_message() {
-    char message[BUF_LEN_DEFAULT] = { 0, };
-    fill_buf_from_stdin(message, sizeof(message));
-    write_broadcasting_message(message, strlen(message));
+static void handle_broadcasting_mode(void) {
+    fprintf(stdout, "You are in chat mode. Enter '-exit' to exit"
+                    " the mode.\n");
+    while (1) {
+        char message[BUF_LEN_DEFAULT] = { 0, };
+        fill_buf_from_stdin(message, sizeof(message));
+
+        if(strstr(message, "-exit"))
+            return;
+
+        write_broadcasting_message(message, strlen(message));
+    }
 }
 
 static void list_connections(void) {
@@ -250,8 +248,17 @@ static void list_connections(void) {
     }
 }
 
-static int input_loop(void) {
-    fprintf(stdout, "You have started input mode.\n");
+static void print_usage(void) {
+    fprintf(stdout, "Chat commands:\n");
+    fprintf(stdout, "    1 <x.x.x.x> - connect to another client "
+                    "with ip x.x.x.x\n");
+    fprintf(stdout, "    2 switch to chat mode\n");
+    fprintf(stdout, "    3 - see connections list\n");
+    fprintf(stdout, "    0 - exit input mode\n");
+}
+
+static int main_loop(void)
+{
     print_usage();
     while (1) {
         int cmd = -1;
@@ -264,7 +271,7 @@ static int input_loop(void) {
             }
 
             case 2: {
-                handle_broadcasting_message();
+                handle_broadcasting_mode();
                 break;
             }
 
@@ -282,28 +289,8 @@ static int input_loop(void) {
                 break;
         }
     }
-out:
-    fprintf(stdout, "You have finished input mode.\n");
-    return 0;
-}
 
-static int main_loop(void)
-{
-    fprintf(stdout, " You are in a read-only mode.\n");
-    fprintf(stdout, " Commands: i - input mode; e - exit. You "
-                    "choice:\n");
-    while (1) {
-        char input = getchar();
-        if (input=='i')
-        {
-            input_loop();
-            fprintf(stdout, " You are back in readonly mode.\n");
-            fprintf(stdout, " Commands: i - input mode; e - exit. "
-                            "You choice:\n");
-        }
-        else if (input == 'e')
-            break;
-    }
+out:
     return 0;
 }
 
@@ -311,9 +298,10 @@ int main(void) {
 
     pthread_t m_listen_thread_id;
     int listener_fd = listener_start(TCP_PORT_DEFAULT);
-    pthread_create(&m_listen_thread_id, NULL, main_listener_thread, &listener_fd);
-    main_loop();
+    pthread_create(&m_listen_thread_id, NULL,
+                   main_listener_thread, &listener_fd);
 
+    main_loop();
     pthread_join(m_listen_thread_id, NULL);
 
     return 0;
