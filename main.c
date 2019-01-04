@@ -17,6 +17,8 @@
 #define TCP_PORT_DEFAULT 8080
 #define BUF_LEN_DEFAULT 256
 
+pthread_mutex_t g_sock_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static struct socket_fd {
     int fd;
     pthread_t thread_id;
@@ -34,7 +36,7 @@ static void *receiving_thread (void *vargp) {
     return NULL;
 }
 
-void get_client_name(int fd, char *buf, size_t len) {
+void get_client_ip(int fd, char *buf, size_t len) {
     struct sockaddr_in addr;
     socklen_t addr_size = sizeof(struct sockaddr_in);
     getpeername(fd, (struct sockaddr *)&addr, &addr_size);
@@ -62,9 +64,11 @@ static int add_global_fd(int fd) {
     while (sfd->next)
         sfd = sfd->next;
 
+    pthread_mutex_lock(&g_sock_mutex);
     sfd->next = new_sfd;
+    pthread_mutex_unlock(&g_sock_mutex);
 
-    get_client_name(new_sfd->fd, ip_buf, sizeof(ip_buf));
+    get_client_ip(new_sfd->fd, ip_buf, sizeof(ip_buf));
 
     LOGI("Connection established: socket -> %d, ip -> %s",
          new_sfd->fd, ip_buf);
@@ -80,8 +84,10 @@ static int remove_global_fd(int fd) {
         sfd = sfd->next;
         if (sfd->fd == fd)
         {
+            pthread_mutex_lock(&g_sock_mutex);
             prev_sfd->next = sfd->next;
             free(sfd);
+            pthread_mutex_unlock(&g_sock_mutex);
             return 0;
         }
 
@@ -217,12 +223,17 @@ static void *main_listener_thread (void *vargp) {
 static void write_broadcasting_message(char *buf, size_t len) {
     struct socket_fd *sfd = &gfd;
 
+    // TODO:
+    // better to create a working list
+    // of sockfds under mutex, and then unlock it
+    pthread_mutex_lock(&g_sock_mutex);
     while (sfd->next) {
         sfd = sfd->next;
 
         if(len != (size_t)write(sfd->fd, buf, len))
             LOGE("Something went wrong while sending message...");
     }
+    pthread_mutex_unlock(&g_sock_mutex);
 }
 
 static void handle_broadcasting_mode(void) {
@@ -241,20 +252,28 @@ static void handle_broadcasting_mode(void) {
 
 static void list_connections(void) {
     struct socket_fd *sfd = &gfd;
-
+    int i = 0;
+    // TODO:
+    // better to create a working list
+    // of sockfds under mutex, and then unlock it
+    pthread_mutex_lock(&g_sock_mutex);
     while (sfd->next) {
+        i++;
+        char ip_buf[64] = { 0, };
         sfd = sfd->next;
-        fprintf(stdout, "Connsction for socket %d\n", sfd->fd);
+        get_client_ip(sfd->fd, ip_buf, sizeof(ip_buf));
+        fprintf(stdout, "Conection %d: socket -> %d, ip -> %s\n", i, sfd->fd, ip_buf);
     }
+    pthread_mutex_unlock(&g_sock_mutex);
 }
 
 static void print_usage(void) {
     fprintf(stdout, "Chat commands:\n");
     fprintf(stdout, "    1 <x.x.x.x> - connect to another client "
                     "with ip x.x.x.x\n");
-    fprintf(stdout, "    2 switch to chat mode\n");
+    fprintf(stdout, "    2 - switch to chat mode\n");
     fprintf(stdout, "    3 - see connections list\n");
-    fprintf(stdout, "    0 - exit input mode\n");
+    fprintf(stdout, "    0 - exit \n");
 }
 
 static int main_loop(void)
