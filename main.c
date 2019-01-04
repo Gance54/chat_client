@@ -10,10 +10,11 @@
 #include <poll.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
 
 #include "log.h"
 
-#define TCP_PORT_DEFAULT 80
+#define TCP_PORT_DEFAULT 8080
 #define BUF_LEN_DEFAULT 256
 
 static struct socket_fd {
@@ -22,25 +23,56 @@ static struct socket_fd {
     struct socket_fd *next;
 } gfd = { -1, 0, NULL };
 
-static int add_global_fd(int fd, pthread_t thread_id) {
+static void *receiving_thread (void *vargp) {
+    char buf[BUF_LEN_DEFAULT] = { 0, };
+    int socket_fd = *(int *)vargp;
+
+    while(1)
+        if(read(socket_fd, buf, sizeof(buf)) > 0)
+            fprintf(stdout, "Received message: %s\n", buf);
+
+    return NULL;
+}
+
+void get_client_name(int fd, char *buf, size_t len) {
+    struct sockaddr_in addr;
+    socklen_t addr_size = sizeof(struct sockaddr_in);
+    getpeername(fd, (struct sockaddr *)&addr, &addr_size);
+    inet_ntop(AF_INET, &addr.sin_addr, buf, (unsigned int)len);
+}
+
+static int add_global_fd(int fd) {
+    char ip_buf[64] = { 0, };
     struct socket_fd *sfd = &gfd;
     struct socket_fd *new_sfd = malloc(sizeof(gfd));
     if (!new_sfd)
         return -1;
 
-    new_sfd->fd = fd;
-    new_sfd->thread_id = thread_id;
     new_sfd->next = NULL;
+    new_sfd->fd = fd;
+
+    if (pthread_create(&new_sfd->thread_id, NULL,
+                       receiving_thread, &new_sfd->fd)) {
+        LOGE("Failed to create a thread.");
+        close(fd);
+        free(new_sfd);
+        return -1;
+    }
 
     while (sfd->next)
         sfd = sfd->next;
 
     sfd->next = new_sfd;
 
+    get_client_name(new_sfd->fd, ip_buf, sizeof(ip_buf));
+
+    LOGI("Connection established: socket -> %d, ip -> %s",
+         new_sfd->fd, ip_buf);
+
     return 0;
 }
 
-/*static int remove_global_fd(int fd) {
+static int remove_global_fd(int fd) {
     struct socket_fd *sfd = &gfd;
     struct socket_fd *prev_sfd = sfd;
 
@@ -57,42 +89,25 @@ static int add_global_fd(int fd, pthread_t thread_id) {
    }
 
    return -1;
-}*/
+}
 
 static void print_usage(void) {
     fprintf(stdout, "Chat commands:\n");
-    fprintf(stdout, "    1 <x.x.x.x> - connect to another client with ip x.x.x.x\n");
-    fprintf(stdout, "    2 <message text> - write a broadcasting message\n");
+    fprintf(stdout, "    1 <x.x.x.x> - connect to another client "
+                    "with ip x.x.x.x\n");
+    fprintf(stdout, "    2 <message text> - write a broadcasting "
+                    "message\n");
     fprintf(stdout, "    3 - see connections list\n");
     fprintf(stdout, "    0 - exit input mode\n");
 }
 
-static void *receiving_thread (void *vargp) {
-    char buf[BUF_LEN_DEFAULT] = { 0, };
-    int socket_fd = *(int*)vargp;
-
-    while(1)
-        if(read(socket_fd, buf, sizeof(buf)) > 0)
-            fprintf(stdout, "Received message: %s\n", buf);
-
-    return NULL;
-}
-
 static int tcp_connect(int fd, struct sockaddr* addr) {
-    pthread_t thread_id;
-
     if (connect(fd, addr, sizeof(struct sockaddr_in))) {
         LOGE("Failed to connect, err = %s", strerror(errno));
         return -1;
     }
 
-    if (pthread_create(&thread_id, NULL, receiving_thread, &fd)) {
-        LOGE("Failed to create a thread.");
-        close(fd);
-        return -1;
-    }
-
-    if (add_global_fd(fd, thread_id)) {
+    if (add_global_fd(fd)) {
         LOGE("Failed to add tcp connection FD.");
         close(fd);
         return -1;
@@ -131,8 +146,6 @@ static int init_tcp_connection(char *ip, int port) {
         close(fd);
         return -1;
     }
-
-    LOGI("Connection established with %s on socket %d", ip, fd);
 
     return 0;
 }
@@ -187,14 +200,7 @@ static void handle_output_connection_request(void) {
 }
 
 static int handle_input_connection(int fd) {
-    pthread_t thread_id;
-    if (pthread_create(&thread_id, NULL, receiving_thread, &fd)) {
-        LOGE("Failed to create a thread.");
-        close(fd);
-        return -1;
-    }
-
-    if (add_global_fd(fd, thread_id)) {
+    if (add_global_fd(fd)) {
         LOGE("Can not add connection fd. Connection limit reached");
         return -1;
     }
@@ -204,12 +210,14 @@ static int handle_input_connection(int fd) {
 
 static void *main_listener_thread (void *vargp) {
     int listening_fd = *(int*)vargp;
-    struct sockaddr_in addr;
-    socklen_t addrlen;
+
     while (1) {
-        LOGD("accepting on %d...", listening_fd);
-        int session_fd = accept(listening_fd, (struct sockaddr*)&addr, &addrlen);
-        LOGI("Accepted connection. Fd = %d", session_fd);
+        int session_fd = accept(listening_fd, NULL, NULL);
+        if (session_fd <= 0) {
+            LOGE("Failed to accept. continue working...");
+            continue;
+        }
+
         if (handle_input_connection(session_fd))
             close(session_fd);
     }
@@ -282,14 +290,16 @@ out:
 static int main_loop(void)
 {
     fprintf(stdout, " You are in a read-only mode.\n");
-    fprintf(stdout, " Commands: i - input mode; e - exit. You choice:\n");
+    fprintf(stdout, " Commands: i - input mode; e - exit. You "
+                    "choice:\n");
     while (1) {
         char input = getchar();
         if (input=='i')
         {
             input_loop();
             fprintf(stdout, " You are back in readonly mode.\n");
-            fprintf(stdout, " Commands: i - input mode; e - exit. You choice:\n");
+            fprintf(stdout, " Commands: i - input mode; e - exit. "
+                            "You choice:\n");
         }
         else if (input == 'e')
             break;
@@ -301,7 +311,6 @@ int main(void) {
 
     pthread_t m_listen_thread_id;
     int listener_fd = listener_start(TCP_PORT_DEFAULT);
-    LOGD("Start listening on fd %d", listener_fd);
     pthread_create(&m_listen_thread_id, NULL, main_listener_thread, &listener_fd);
     main_loop();
 
