@@ -374,6 +374,7 @@ static int main_loop(void) {
         switch (cmd) {
             case 1: {
                 handle_output_connection_request();
+                print_usage();
                 break;
             }
 
@@ -384,6 +385,7 @@ static int main_loop(void) {
 
             case 3: {
                 list_connections();
+                print_usage();
                 break;
             }
 
@@ -392,6 +394,7 @@ static int main_loop(void) {
 
             default:
                 LOGE("Wrong command");
+                print_usage();
                 return 0;
         }
     }
