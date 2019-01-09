@@ -12,7 +12,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <signal.h>
-
+#include "crypto_helper.h"
 #include "log.h"
 
 #define TCP_PORT_DEFAULT 8080
@@ -57,8 +57,7 @@ static int remove_global_fd(int fd) {
 
     while(sfd->next) {
         sfd = sfd->next;
-        if (sfd->fd == fd)
-        {
+        if (sfd->fd == fd)  {
             pthread_mutex_lock(&g_sock_mutex);
             prev_sfd->next = sfd->next;
             release_sfd(sfd);
@@ -79,7 +78,7 @@ static int decrypt(char *in, size_t in_len, char **out, size_t *out_len) {
     char *ptr;
     size_t len;
     len = in_len + 1;
-    ptr = malloc(len);
+    ptr = (char*)malloc(len);
     if(!ptr)
         return -1;
 
@@ -99,7 +98,7 @@ static int encrypt(char *in, size_t in_len, char **out, size_t *out_len) {
     char *ptr;
     size_t len;
     len = in_len + 1;
-    ptr = malloc(len);
+    ptr = (char*)malloc(len);
     if(!ptr)
         return -1;
 
@@ -149,7 +148,7 @@ static void *receiving_thread (void *vargp) {
 static int add_global_fd(int fd) {
     char ip_buf[64] = { 0, };
     struct socket_fd *sfd = &gfd;
-    struct socket_fd *new_sfd = malloc(sizeof(gfd));
+    struct socket_fd *new_sfd = (struct socket_fd*)malloc(sizeof(gfd));
     if (!new_sfd)
         return -1;
 
@@ -403,6 +402,8 @@ out:
 
 int main(void) {
     pthread_t m_listen_thread_id;
+    CryptoHelper kc;
+
     int listener_fd = listener_start(TCP_PORT_DEFAULT);
     pthread_create(&m_listen_thread_id, NULL,
                    main_listener_thread, &listener_fd);
