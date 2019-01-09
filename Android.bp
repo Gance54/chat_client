@@ -7,7 +7,7 @@ cc_defaults {
 cc_binary {
     name: "chat_client",
     defaults: ["client_common_defaults"],
-    srcs: [ "main.cpp", "crypto_helper.cpp" ],
+    srcs: [ "main.c", "crypto_helper.c" ],
     cflags: ["-Wno-missing-prototypes"],
     shared_libs: [
         "libcrypto",

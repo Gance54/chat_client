@@ -18,6 +18,19 @@
 #define TCP_PORT_DEFAULT 8080
 #define BUF_LEN_DEFAULT 256
 
+static void dump_blob (char *buf, size_t len) {
+    size_t i;
+    LOGI("Dumping blob ----------------------");
+    for (i = 0; i < len; i++) {
+        fprintf(stdout, "%02x", buf[i]);
+        if(i%8 == 7)
+            fprintf(stdout, "\n");
+    }
+    LOGI("Blob dumped ------------------------");
+}
+
+static const char *key = "01234567890123456789012345678901";
+
 static pthread_mutex_t g_sock_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static struct socket_fd {
@@ -73,37 +86,69 @@ static int remove_global_fd(int fd) {
 
 /*
  * Decrypt function
+ * TODO: rewrite with a structure
+ * TODO: refactor -> move closer to sending moment
  * */
 static int decrypt(char *in, size_t in_len, char **out, size_t *out_len) {
     char *ptr;
     size_t len;
-    len = in_len + 1;
+    char iv[AES_GCM_256_IV_LEN];
+    char tag[AES_GCM_256_TAG_LEN];
+
+    if (in_len < sizeof(iv) + sizeof(tag)) {
+        LOGE("Too short message came. It can not be decrypted");
+        return -1;
+    }
+
+    len = in_len - sizeof(tag) - sizeof(iv) + 1;
     ptr = (char*)malloc(len);
     if(!ptr)
         return -1;
 
-    memcpy(ptr, in, in_len);
-    ptr[in_len] = '\0';
+    memcpy(tag, in + in_len - sizeof(tag), sizeof(tag));
+    in_len -= sizeof(tag);
+    memcpy(iv, in + in_len - sizeof(iv), sizeof(iv));
+    in_len -= sizeof(iv);
 
+    if (EncryptDecrypt(MODE_DECRYPT, in, in_len, (char*)key, iv, tag, ptr, &len)) {
+        LOGE("Failed to decrypt message");
+        free(ptr);
+        return -1;
+    }
+
+    ptr[len] = '\0';
     *out = ptr;
-    *out_len = len;
+    *out_len = len + 1;
 
     return 0;
 }
 
 /*
  * Encrypt function
+ * TODO: rewrite with a structure
+ * TODO: refactor -> move closer to sending moment
  * */
 static int encrypt(char *in, size_t in_len, char **out, size_t *out_len) {
     char *ptr;
     size_t len;
-    len = in_len + 1;
+    char iv[AES_GCM_256_IV_LEN];
+    char tag[AES_GCM_256_TAG_LEN];
+    RAND_bytes((unsigned char*)iv, (int)sizeof(iv));
+    len = in_len + AES_GCM_256_IV_LEN + AES_GCM_256_TAG_LEN;
     ptr = (char*)malloc(len);
     if(!ptr)
         return -1;
 
-    memcpy(ptr, in, in_len);
-    ptr[in_len] = '\0';
+    if (EncryptDecrypt(MODE_ENCRYPT, in, in_len, (char*)key, iv, tag, ptr, &len)) {
+        LOGE("Failed to encrypt message");
+        free(ptr);
+        return -1;
+    }
+
+    memcpy(ptr + len, iv, sizeof(iv));
+    len += sizeof(iv);
+    memcpy(ptr + len, tag, sizeof(tag));
+    len += sizeof(tag);
 
     *out = ptr;
     *out_len = len;
@@ -334,7 +379,7 @@ static void handle_broadcasting_mode(void) {
             continue;
         }
 
-        write_broadcasting_message(message, strlen(message));
+        write_broadcasting_message(buf, len);
         free(buf);
     }
 }
@@ -368,9 +413,12 @@ static void print_usage(void) {
 static int main_loop(void) {
     print_usage();
     while (1) {
+        char buf[10] = { 0, };
         int cmd = -1;
+        char *end;
         fprintf(stdout, "enter the command:\n");
-        scanf("%d", &cmd);
+        fgets(buf, sizeof(buf), stdin);
+        cmd = (int)strtol(buf, &end, 10);
         switch (cmd) {
             case 1: {
                 handle_output_connection_request();
@@ -405,7 +453,6 @@ out:
 
 int main(void) {
     pthread_t m_listen_thread_id;
-    CryptoHelper kc;
 
     int listener_fd = listener_start(TCP_PORT_DEFAULT);
     pthread_create(&m_listen_thread_id, NULL,
