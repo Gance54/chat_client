@@ -63,5 +63,4 @@ int EncryptDecrypt(int mode, char *in, size_t in_len, char *key,
 out:
     EVP_CIPHER_CTX_free(ctx);;
     return ret;
-
 }

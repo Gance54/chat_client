@@ -18,7 +18,7 @@
 #define TCP_PORT_DEFAULT 8080
 #define BUF_LEN_DEFAULT 256
 
-static void dump_blob (char *buf, size_t len) {
+/*static void dump_blob (char *buf, size_t len) {
     size_t i;
     LOGI("Dumping blob ----------------------");
     for (i = 0; i < len; i++) {
@@ -27,7 +27,7 @@ static void dump_blob (char *buf, size_t len) {
             fprintf(stdout, "\n");
     }
     LOGI("Blob dumped ------------------------");
-}
+}*/
 
 static const char *key = "01234567890123456789012345678901";
 
@@ -403,8 +403,7 @@ static void list_connections(void) {
 
 static void print_usage(void) {
     fprintf(stdout, "Chat commands:\n");
-    fprintf(stdout, "    1 <x.x.x.x> - connect to another client "
-                    "with ip x.x.x.x\n");
+    fprintf(stdout, "    1 - connect to another client\n");
     fprintf(stdout, "    2 - switch to chat mode\n");
     fprintf(stdout, "    3 - see connections list\n");
     fprintf(stdout, "    0 - exit \n");
@@ -421,6 +420,7 @@ static int main_loop(void) {
         cmd = (int)strtol(buf, &end, 10);
         switch (cmd) {
             case 1: {
+                fprintf(stdout, "Enter IP: x.x.x.x\n");
                 handle_output_connection_request();
                 print_usage();
                 break;
