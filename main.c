@@ -17,6 +17,7 @@
 
 #define TCP_PORT_DEFAULT 8080
 #define BUF_LEN_DEFAULT 256
+#define KEY_FILE_NAME_DEFAULT "/data/local/tmp/encrypted_key.dat"
 
 /*static void dump_blob (char *buf, size_t len) {
     size_t i;
@@ -29,7 +30,7 @@
     LOGI("Blob dumped ------------------------");
 }*/
 
-static const char *key = "01234567890123456789012345678901";
+static char gkey[32] = "01234567890123456789012345678901";
 
 static pthread_mutex_t g_sock_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -89,7 +90,7 @@ static int remove_global_fd(int fd) {
  * TODO: rewrite with a structure
  * TODO: refactor -> move closer to sending moment
  * */
-static int decrypt(char *in, size_t in_len, char **out, size_t *out_len) {
+static int decrypt(char *in, size_t in_len, char **out, size_t *out_len, char *key) {
     char *ptr;
     size_t len;
     char iv[AES_GCM_256_IV_LEN];
@@ -101,7 +102,7 @@ static int decrypt(char *in, size_t in_len, char **out, size_t *out_len) {
     }
 
     len = in_len - sizeof(tag) - sizeof(iv) + 1;
-    ptr = (char*)malloc(len);
+    ptr = *out ? *out : (char*)malloc(len);
     if(!ptr)
         return -1;
 
@@ -128,14 +129,14 @@ static int decrypt(char *in, size_t in_len, char **out, size_t *out_len) {
  * TODO: rewrite with a structure
  * TODO: refactor -> move closer to sending moment
  * */
-static int encrypt(char *in, size_t in_len, char **out, size_t *out_len) {
+static int encrypt(char *in, size_t in_len, char **out, size_t *out_len, char *key) {
     char *ptr;
     size_t len;
     char iv[AES_GCM_256_IV_LEN];
     char tag[AES_GCM_256_TAG_LEN];
     RAND_bytes((unsigned char*)iv, (int)sizeof(iv));
     len = in_len + AES_GCM_256_IV_LEN + AES_GCM_256_TAG_LEN;
-    ptr = (char*)malloc(len);
+    ptr = *out ? *out : (char*)malloc(len);
     if(!ptr)
         return -1;
 
@@ -165,20 +166,25 @@ static int accept_message(int socket_fd, char **buf, size_t *len) {
         else
             LOGI("Connection from socket %d was closed by peer",
                 socket_fd);
-        return -1;
+        return -2;
     }
 
-    return decrypt(b, (size_t)l, buf, len);
+    return decrypt(b, (size_t)l, buf, len, (char*)gkey);
 }
 
 static void *receiving_thread (void *vargp) {
     int socket_fd = *(int *)vargp;
-    char *buf;
     size_t len;
+    int ret;
     while (1) {
-        if (accept_message(socket_fd, &buf, &len) == 0) {
+        char *buf = NULL;
+        ret = accept_message(socket_fd, &buf, &len);
+        if ( ret == 0) {
             fprintf(stdout, ">>%s\n", buf);
             free(buf);
+        }
+        else if (ret == -1) {
+            continue;
         }
         else {
             LOGI("Closing cosket %d", socket_fd);
@@ -191,7 +197,7 @@ static void *receiving_thread (void *vargp) {
 }
 
 static int add_global_fd(int fd) {
-    char ip_buf[64] = { 0, };
+    char ip_buf[BUF_LEN_DEFAULT] = { 0, };
     struct socket_fd *sfd = &gfd;
     struct socket_fd *new_sfd = (struct socket_fd*)malloc(sizeof(gfd));
     if (!new_sfd)
@@ -313,7 +319,7 @@ static void fill_buf_from_stdin(char *buf, size_t size) {
 }
 
 static void handle_output_connection_request(void) {
-    char ip_buf[64] = { 0, };
+    char ip_buf[BUF_LEN_DEFAULT] = { 0, };
 
     fill_buf_from_stdin(ip_buf, sizeof(ip_buf));
 
@@ -366,7 +372,7 @@ static void handle_broadcasting_mode(void) {
     fprintf(stdout, "You are in chat mode. Enter '-exit' to exit"
                     " the mode.\n");
     while (1) {
-        char *buf;
+        char *buf = NULL;
         size_t len;
         char message[BUF_LEN_DEFAULT] = { 0, };
         fill_buf_from_stdin(message, sizeof(message));
@@ -374,7 +380,7 @@ static void handle_broadcasting_mode(void) {
         if (strstr(message, "-exit"))
             return;
 
-        if (encrypt(message, strlen(message), &buf, &len)) {
+        if (encrypt(message, strlen(message), &buf, &len, (char*)gkey)) {
             LOGE("Failed to encrypt message");
             continue;
         }
@@ -393,7 +399,7 @@ static void list_connections(void) {
     pthread_mutex_lock(&g_sock_mutex);
     while (sfd->next) {
         i++;
-        char ip_buf[64] = { 0, };
+        char ip_buf[BUF_LEN_DEFAULT] = { 0, };
         sfd = sfd->next;
         get_client_ip(sfd->fd, ip_buf, sizeof(ip_buf));
         fprintf(stdout, "Conection %d: socket -> %d, ip -> %s\n", i, sfd->fd, ip_buf);
@@ -406,7 +412,107 @@ static void print_usage(void) {
     fprintf(stdout, "    1 - connect to another client\n");
     fprintf(stdout, "    2 - switch to chat mode\n");
     fprintf(stdout, "    3 - see connections list\n");
-    fprintf(stdout, "    0 - exit \n");
+    fprintf(stdout, "    4 - encrypt key and write to a file\n");
+    fprintf(stdout, "    5 - decrypt key from file\n");
+    fprintf(stdout, "    6 - set key manually\n");
+    fprintf(stdout, "    10 - exit \n");
+}
+
+static int encrypt_and_write_key(char *key_data) {
+    int ret = -1;
+    FILE *pFile = NULL;
+    char phrase[BUF_LEN_DEFAULT] = { 0, };
+    char kek[SHA256_DEFAULT_SIZE] = { 0, };
+    char *encrypted_key;
+    size_t encrypted_key_len;
+    size_t bytes_written;
+    fprintf(stdout, "Please, write a passphrase for key encryption: ");
+    fgets(phrase, sizeof(phrase), stdin);
+    if(!SHA256((const uint8_t*)phrase, strlen(phrase), (uint8_t*)kek)) {
+        LOGE("Failed to calculate hash for passphrase");
+        return -1;
+    }
+
+    if (encrypt(key_data, AES_GCM_256_KEY_LEN, &encrypted_key, &encrypted_key_len, kek)) {
+        LOGE("Failed to encrypt key");
+        return -1;
+    }
+
+    pFile = fopen(KEY_FILE_NAME_DEFAULT, "wb");
+    if (!pFile) {
+        LOGE("Can not open file, error = %s", strerror(errno));
+        goto out;
+    }
+
+    bytes_written = fwrite(encrypted_key, 1, encrypted_key_len, pFile);
+
+    if (bytes_written != encrypted_key_len) {
+        LOGE("Could not write key to a file. Wrote %zu, expected %zu. Error = %s",
+             bytes_written, encrypted_key_len, strerror(errno));
+        goto out;
+    }
+
+    ret = 0;
+
+out:
+    free(encrypted_key);
+    if(pFile)
+        fclose(pFile);
+
+    return ret;
+}
+
+static int read_and_decrypt_key(char *key_data) {
+    int ret = -1;
+    FILE *pFile = NULL;
+    char phrase[BUF_LEN_DEFAULT] = { 0, };
+    char kek[SHA256_DEFAULT_SIZE] = { 0, };
+    char encrypted_key[AES_GCM_256_KEY_LEN * 2];
+    size_t encrypted_key_len;
+    size_t decrypted_key_len;
+    fprintf(stdout, "Please, write a passphrase for key encryption: ");
+    fgets(phrase, sizeof(phrase), stdin);
+    if(!SHA256((const uint8_t *)phrase, strlen(phrase), (uint8_t*)kek)) {
+        LOGE("Failed to calculate hash for passphrase");
+        return -1;
+    }
+
+    pFile = fopen(KEY_FILE_NAME_DEFAULT, "rb");
+    if (!pFile) {
+        LOGE("Can not open file, error = %s", strerror(errno));
+        goto out;
+    }
+
+    fseek(pFile , 0 , SEEK_END);
+    encrypted_key_len = (size_t)ftell(pFile);
+    rewind (pFile);
+    size_t bytes_read = fread(encrypted_key, 1, sizeof(encrypted_key), pFile);
+
+    if (bytes_read != encrypted_key_len) {
+        LOGE("Could not read key from file. Read %zu, expected = %zu Error = %s",
+             bytes_read, encrypted_key_len, strerror(errno));
+        goto out;
+    }
+
+    if (decrypt(encrypted_key, encrypted_key_len, &key_data, &decrypted_key_len, kek)) {
+        LOGE("Failed to decrypt key");
+        goto out;
+    }
+
+    ret = 0;
+out:
+    free(encrypted_key);
+    if(pFile)
+        fclose(pFile);
+
+    return ret;
+}
+
+static void set_key_by_user(void) {
+    char key_buf[AES_GCM_256_KEY_LEN] = { 0, };
+    fprintf(stdout, "Enter the key:\n");
+    fgets(key_buf, sizeof(key_buf), stdin);
+    memcpy(gkey, key_buf, sizeof(gkey));
 }
 
 static int main_loop(void) {
@@ -437,8 +543,30 @@ static int main_loop(void) {
                 break;
             }
 
-            case 0:
+            case 4: {
+                if(encrypt_and_write_key(gkey)) {
+                    LOGE("Failed to encrypt key and write to a file");
+                }
+                break;
+            }
+
+            case 5: {
+                if (read_and_decrypt_key(gkey)) {
+                    LOGE("Failed to decrypt read and decrypt key");
+                }
+                break;
+            }
+
+            case 6: {
+                set_key_by_user();
+                break;
+             }
+
+            case 10:
                 goto out;
+
+            case 0:
+                continue;
 
             default:
                 LOGE("Wrong command");

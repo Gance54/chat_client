@@ -1,4 +1,9 @@
 #include "crypto_helper.h"
+#include <openssl/conf.h>
+#include <openssl/evp.h>
+#include <openssl/err.h>
+#include <openssl/rand.h>
+#include <openssl/sha.h>
 
 int EncryptDecrypt(int mode, char *in, size_t in_len, char *key,
                    char *iv, char* tag, char *out, size_t *out_len) {
@@ -64,3 +69,5 @@ out:
     EVP_CIPHER_CTX_free(ctx);;
     return ret;
 }
+
+
